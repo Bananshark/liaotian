@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>弹幕消息显示</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Microsoft YaHei', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            overflow: hidden;
+            position: relative;
+        }
+
+        .container {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: rgba(255, 255, 255, 0.95);
+            padding: 20px;
+            box-shadow: 0 -5px 20px rgba(0, 0, 0, 0.2);
+            z-index: 1000;
+        }
+
+        .danmaku-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: calc(100vh - 120px);
+            overflow: hidden;
+            pointer-events: none;
+            z-index: 1;
+        }
+
+        .danmaku-item {
+            position: absolute;
+            white-space: nowrap;
+            font-size: 28px;
+            font-weight: bold;
+            text-shadow: 
+                2px 2px 4px rgba(0, 0, 0, 0.8),
+                0 0 10px rgba(255, 255, 255, 0.3);
+            padding: 10px 20px;
+            border-radius: 25px;
+            background: rgba(0, 0, 0, 0.3);
+            backdrop-filter: blur(10px);
+            border: 2px solid rgba(255, 255, 255, 0.2);
+            animation: danmakuMove linear infinite;
+            pointer-events: auto;
+            transition: transform 0.1s ease;
+        }
+
+        .danmaku-item:hover {
+            transform: scale(1.1);
+            z-index: 10;
+        }
+
+        @keyframes danmakuMove {
+            0% {
+                transform: translateX(100vw);
+                opacity: 1;
+            }
+            100% {
+                transform: translateX(-100%);
+                opacity: 1;
+            }
+        }
+
+        h1 {
+            text-align: center;
+            color: #333;
+            margin-bottom: 15px;
+            font-size: 1.5em;
+        }
+
+        .input-section {
+            display: flex;
+            gap: 10px;
+        }
+
+        #messageInput {
+            flex: 1;
+            padding: 15px 20px;
+            border: 2px solid #e0e0e0;
+            border-radius: 25px;
+            font-size: 16px;
+            outline: none;
+            transition: all 0.3s ease;
+        }
+
+        #messageInput:focus {
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+
+        #sendButton {
+            padding: 15px 30px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 25px;
+            font-size: 16px;
+            cursor: pointer;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+            font-weight: bold;
+        }
+
+        #sendButton:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        #sendButton:active {
+            transform: translateY(0);
+        }
+
+        .clear-button {
+            width: 100%;
+            padding: 10px;
+            margin-top: 10px;
+            background: #ff6b6b;
+            color: white;
+            border: none;
+            border-radius: 15px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background 0.3s ease;
+        }
+
+        .clear-button:hover {
+            background: #ff5252;
+        }
+    </style>
+</head>
+<body>
+    <div class="danmaku-container" id="danmakuContainer"></div>
+    
+    <div class="container">
+        <h1>💬 弹幕消息</h1>
+        
+        <div class="input-section">
+            <input 
+                type="text" 
+                id="messageInput" 
+                placeholder="输入消息后按回车或点击发送，文字将以弹幕形式显示..."
+                autocomplete="off"
+            >
+            <button id="sendButton">发送</button>
+        </div>
+
+        <button class="clear-button" id="clearButton">清空弹幕</button>
+    </div>
+
+    <script>
+        const messageInput = document.getElementById('messageInput');
+        const sendButton = document.getElementById('sendButton');
+        const danmakuContainer = document.getElementById('danmakuContainer');
+        const clearButton = document.getElementById('clearButton');
+
+        // 弹幕颜色数组
+        const danmakuColors = [
+            '#ffffff', '#ff6b6b', '#4ecdc4', '#45b7d1', 
+            '#f9ca24', '#f0932b', '#eb4d4b', '#6c5ce7',
+            '#a29bfe', '#fd79a8', '#00b894', '#00cec9'
+        ];
+
+        // 存储所有弹幕的引用
+        const danmakuList = [];
+
+        // WebSocket连接
+        function getWebSocketUrl() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const host = window.location.hostname;
+            const port = window.location.port || (window.location.protocol === 'https:' ? '443' : '3000');
+            return `${protocol}//${host}:${port}`;
+        }
+        const wsUrl = getWebSocketUrl();
+        
+        let ws = null;
+        let reconnectAttempts = 0;
+        const maxReconnectAttempts = 5;
+
+        // 连接WebSocket
+        function connectWebSocket() {
+            try {
+                ws = new WebSocket(wsUrl);
+
+                ws.onopen = () => {
+                    console.log('WebSocket连接成功');
+                    reconnectAttempts = 0;
+                    updateConnectionStatus(true);
+                };
+
+                ws.onmessage = (event) => {
+                    try {
+                        const data = JSON.parse(event.data);
+                        
+                        if (data.type === 'init') {
+                            // 初始化：加载所有现有弹幕
+                            if (data.danmakus && data.danmakus.length > 0) {
+                                data.danmakus.forEach(danmaku => {
+                                    displayDanmaku(danmaku);
+                                });
+                            }
+                        } else if (data.type === 'newDanmaku') {
+                            // 接收新弹幕
+                            displayDanmaku(data.danmaku);
+                        } else if (data.type === 'clearDanmaku') {
+                            // 清空弹幕
+                            clearAllDanmaku();
+                        }
+                    } catch (error) {
+                        console.error('处理消息错误:', error);
+                    }
+                };
+
+                ws.onerror = (error) => {
+                    console.error('WebSocket错误:', error);
+                    updateConnectionStatus(false);
+                };
+
+                ws.onclose = () => {
+                    console.log('WebSocket连接关闭');
+                    updateConnectionStatus(false);
+                    
+                    // 尝试重连
+                    if (reconnectAttempts < maxReconnectAttempts) {
+                        reconnectAttempts++;
+                        console.log(`尝试重连 (${reconnectAttempts}/${maxReconnectAttempts})...`);
+                        setTimeout(connectWebSocket, 3000);
+                    } else {
+                        console.error('达到最大重连次数，请刷新页面');
+                    }
+                };
+            } catch (error) {
+                console.error('WebSocket连接失败:', error);
+                updateConnectionStatus(false);
+            }
+        }
+
+        // 更新连接状态显示
+        function updateConnectionStatus(connected) {
+            const statusIndicator = document.getElementById('connectionStatus');
+            if (!statusIndicator) {
+                const status = document.createElement('div');
+                status.id = 'connectionStatus';
+                status.style.cssText = 'position: fixed; top: 10px; right: 10px; padding: 8px 15px; border-radius: 20px; font-size: 12px; z-index: 2000; background: rgba(0,0,0,0.7); color: white;';
+                document.body.appendChild(status);
+            }
+            const indicator = document.getElementById('connectionStatus');
+            if (connected) {
+                indicator.textContent = '🟢 已连接';
+                indicator.style.background = 'rgba(76, 175, 80, 0.8)';
+            } else {
+                indicator.textContent = '🔴 未连接';
+                indicator.style.background = 'rgba(244, 67, 54, 0.8)';
+            }
+        }
+
+        // 显示弹幕
+        function displayDanmaku(danmakuData) {
+            const danmaku = document.createElement('div');
+            danmaku.className = 'danmaku-item';
+            danmaku.textContent = danmakuData.text;
+            
+            // 使用保存的属性或生成新的
+            const color = danmakuData.color || danmakuColors[Math.floor(Math.random() * danmakuColors.length)];
+            const fontSize = danmakuData.fontSize || (22 + Math.random() * 10);
+            const top = danmakuData.top || (Math.random() * (danmakuContainer.offsetHeight - 60) + 10);
+            const duration = danmakuData.duration || (8 + Math.random() * 7);
+            
+            danmaku.style.color = color;
+            danmaku.style.fontSize = fontSize + 'px';
+            danmaku.style.top = top + 'px';
+            danmaku.style.animationDuration = duration + 's';
+            
+            // 添加到容器和列表
+            danmakuContainer.appendChild(danmaku);
+            danmakuList.push(danmaku);
+        }
+
+        // 创建弹幕函数（本地显示）
+        function createDanmaku(text) {
+            const color = danmakuColors[Math.floor(Math.random() * danmakuColors.length)];
+            const fontSize = 22 + Math.random() * 10;
+            const containerHeight = danmakuContainer.offsetHeight;
+            const top = Math.random() * (containerHeight - 60) + 10;
+            const duration = 8 + Math.random() * 7;
+            
+            const danmakuData = {
+                text: text,
+                color: color,
+                fontSize: fontSize,
+                top: top,
+                duration: duration
+            };
+            
+            // 本地显示
+            displayDanmaku(danmakuData);
+            
+            // 发送到服务器
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: 'newDanmaku',
+                    ...danmakuData
+                }));
+            } else {
+                console.warn('WebSocket未连接，弹幕仅本地显示');
+            }
+        }
+
+        // 发送消息函数
+        function sendMessage() {
+            const message = messageInput.value.trim();
+            
+            if (message === '') {
+                return;
+            }
+
+            // 创建弹幕
+            createDanmaku(message);
+
+            // 清空输入框
+            messageInput.value = '';
+
+            // 添加焦点到输入框
+            messageInput.focus();
+        }
+
+        // 清空所有弹幕
+        function clearAllDanmaku() {
+            danmakuList.forEach(danmaku => danmaku.remove());
+            danmakuList.length = 0;
+        }
+
+        // 发送按钮点击事件
+        sendButton.addEventListener('click', sendMessage);
+
+        // 回车键发送
+        messageInput.addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                sendMessage();
+            }
+        });
+
+        // 清空弹幕
+        clearButton.addEventListener('click', function() {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: 'clearDanmaku'
+                }));
+            }
+            clearAllDanmaku();
+            messageInput.focus();
+        });
+
+        // 页面加载后初始化
+        window.addEventListener('load', function() {
+            messageInput.focus();
+            // 连接WebSocket
+            connectWebSocket();
+        });
+
+        // 窗口大小改变时更新容器高度
+        window.addEventListener('resize', function() {
+            // 容器高度会自动适应
+        });
+    </script>
+</body>
+</html>
